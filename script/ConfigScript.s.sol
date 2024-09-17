@@ -20,10 +20,17 @@ contract ConfigScript is Script {
     NetworkConfig public activeNetworkConfig;
     
 
-    constructor() {}
+    constructor() {
+        if (block.chainid = 11155111){
+            activeNetworkConfig = getSepoliaETHConfig();
+        } else {
+            activeNetworkConfig = getAnvilConfig();
+        }
+    }
 
     /**
-     * @notice Use Chainlink pricefeed addresses
+     * @notice Uses Chainlink pricefeed addresses
+     * @notice Feel free to use whichever oracle provider you prefer
      */
     function getSepoliaETHConfig() public view returns (NetworkConfig memory) {
         return NetworkConfig({
@@ -47,5 +54,13 @@ contract ConfigScript is Script {
         ERC20Mock wBTCMock = new ERC20Mock("WBTC", "WBTC", msg.sender, 1000e8);
 
         vm.stopBroadcast();
+
+        return NetworkConfig({
+            wethUsdPriceFeed: address(ethUsdPriceFeed),
+            wbtcUsdPriceFeed: address(btcUsdPriceFeed),
+            weth: address(wETHMock),
+            wbtc: address(wBTCMock),
+            deployerKey: vm.envUint("PRIVATE_KEY")
+        })
     }
 }
