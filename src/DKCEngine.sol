@@ -93,7 +93,8 @@ contract DKCEngine is ReentrancyGuard {
     //////////////          Events          //////////////
     //////////////////////////////////////////////////////
 
-    event collateralDeposited(address indexed user, address indexed tokenAddress, uint256 indexed tokenAmount);
+    event CollateralDeposited(address indexed user, address indexed tokenAddress, uint256 indexed tokenAmount);
+    event CollateralRedeemed(address indexed user, address indexed tokenAddress, uint256 indexed tokenAmount);
 
     //////////////////////////////////////////////////////
     //////////////        Modifiers        ///////////////
@@ -117,27 +118,43 @@ contract DKCEngine is ReentrancyGuard {
     //////////////////////////////////////////////////////
 
     /**
+     * @param collateralTokenAddress The collateral token address(wETH,WBTC)
+     * @param collateralTokenAmount The amount of collateral you want to deposit to the contract
+     * @param dkcToMint The amount of DKC you want to mint
+     * @notice This function deposits your collateral and mints DKC for you.
+     */
+    function depositAndMintDKC(address collateralTokenAddress, uint256 collateralTokenAmount, uint256 dkcToMint)
+        external
+    {
+        depositCollateral(collateralTokenAddress, collateralTokenAmount);
+        mintDKC(dkcToMint);
+    }
+
+    /**
      * @param collateralTokenAddress The address of the token to deposit.
      * @param collateralTokenAmount The amount of collateral amount to deposit.
+     * @notice This function deposits an amount of collateral tokens specified by a user
      */
     function depositCollateral(address collateralTokenAddress, uint256 collateralTokenAmount)
-        external
+        public
         isAllowed(collateralTokenAddress)
         amountGreaterThanZero(collateralTokenAmount)
         nonReentrant
     {
         //Logic for depositing collateral
         s_collateralDeposited[msg.sender][collateralTokenAddress] += collateralTokenAmount;
-        emit collateralDeposited(msg.sender, collateralTokenAddress, collateralTokenAmount);
+        emit CollateralDeposited(msg.sender, collateralTokenAddress, collateralTokenAmount);
         bool success = IERC20(collateralTokenAddress).transferFrom(msg.sender, address(this), collateralTokenAmount);
         if (!success) {
             revert DKCEngine__TransferFailed();
         }
     }
 
-    function withdrawCollateral() external {}
-
-    function mintDKC(uint256 dkcToMint) external amountGreaterThanZero(dkcToMint) nonReentrant {
+    /**
+     * @param dkcToMint  The amount of DKC to mint
+     * @notice Mints DKC for you.
+     */
+    function mintDKC(uint256 dkcToMint) public amountGreaterThanZero(dkcToMint) nonReentrant {
         //Logic for minting DKC
         s_DKCCoins[msg.sender] += dkcToMint;
         _revertIfHealthFactorIsBroken(msg.sender);
@@ -147,9 +164,61 @@ contract DKCEngine is ReentrancyGuard {
         }
     }
 
-    function burnDKC() external {}
+    /**
+     *
+     * @param collateralTokenAddress collateral token address for token redemption
+     * @param collateralTokenAmount collateral token amount to redeem
+     * @param dkcAmount DKC amount to burn for collateral
+     * @notice this burns DKC tokens and refunds equivalent collateral value.
+     */
+    function redeemCollateralAndBurnDKC(
+        address collateralTokenAddress,
+        uint256 collateralTokenAmount,
+        uint256 dkcAmount
+    ) external {
+        //Logic for redeeming and burning collateral
+        burnDKC(dkcAmount);
+        redeemCollateral(collateralTokenAddress, collateralTokenAmount);
+    }
 
-    function liquidate() external {}
+    function redeemCollateral(address collateralTokenAddress, uint256 collateralTokenAmount)
+        public
+        amountGreaterThanZero(collateralTokenAmount)
+        nonReentrant
+    {
+        //Logic for redeeming collateral
+        s_collateralDeposited[msg.sender][collateralTokenAddress] -= collateralTokenAmount;
+        emit CollateralRedeemed(msg.sender, collateralTokenAddress, collateralTokenAmount);
+        bool success = IERC20(collateralTokenAddress).transfer(msg.sender, collateralTokenAmount);
+        if (!success) {
+            revert DKCEngine__TransferFailed();
+        }
+        _revertIfHealthFactorIsBroken(msg.sender);
+    }
+
+    function burnDKC(uint256 dkcAmount) public amountGreaterThanZero(dkcAmount) {
+        //Logic for burning DKC
+        s_DKCCoins[msg.sender] -= dkcAmount;
+        bool success = i_dsc.transferFrom(msg.sender, address(this), dkcAmount);
+        if (!success) {
+            revert DKCEngine__TransferFailed();
+        }
+        i_dsc.burn(dkcAmount);
+    }
+
+    /**
+     *  @param collateralTokenAddress this is the ERC20 collateral address
+     *  @param userAddress Undercollateralized user address
+     *  @param debtToClear DKC tokens you want toburn off toimprove user health and overall system health
+     *  @notice if your collateral value drops and you are undercollateralized, we pay someone to liquidate you
+     *  @notice Someone will be able to pay off the DKC you owe/own and take your collateral token(s)
+     *  @notice you can choose to partially liquidate a user
+     *  @notice After liquidation you'll get a liquidation bonus
+     */
+    function liquidate(address collateralTokenAddress, address userAddress, uint256 debtToClear) external amountGreaterThanZero(debtToClear) nonReentrant{
+        //Logic for liquidating undercollateralized users
+        
+    }
 
     //////////////////////////////////////////////////////
     //////////////       Public funcs       //////////////

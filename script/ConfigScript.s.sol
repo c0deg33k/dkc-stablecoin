@@ -19,10 +19,9 @@ contract ConfigScript is Script {
     int256 public constant BTC_USD_PRICE = 1000e8;
     uint256 public constant INITIAL_ACCOUNT_BALANCE = 1000e8;
     NetworkConfig public activeNetworkConfig;
-    
 
     constructor() {
-        if (block.chainid == 11155111){
+        if (block.chainid == 11155111) {
             activeNetworkConfig = getSepoliaETHConfig();
         } else {
             activeNetworkConfig = getAnvilConfig();
