@@ -263,6 +263,10 @@ contract DKCEngine is ReentrancyGuard {
         return ((uint256(price) * ADDITIONAL_FEED_PRECISSION) * amount) / PRECISSION;
     }
 
+    function getUserAccountInfo(address user) external view returns(uint256 dkcMinted, uint256 usdCollateralValue) {
+        (dkcMinted, usdCollateralValue) = _getUserAccountInfo(user);
+    }
+
     //////////////////////////////////////////////////////
     ////////////// Private & Internal funcs //////////////
     //////////////////////////////////////////////////////
@@ -297,7 +301,6 @@ contract DKCEngine is ReentrancyGuard {
     function _getUserAccountInfo(address user) private view returns (uint256 dkcMinted, uint256 usdCollateralValue) {
         dkcMinted = s_DKCCoins[user];
         usdCollateralValue = getUserCollateralValue(user);
-        return (dkcMinted, usdCollateralValue);
     }
 
     /**
