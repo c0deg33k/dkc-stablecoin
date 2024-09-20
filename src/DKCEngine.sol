@@ -56,6 +56,8 @@ contract DKCEngine is ReentrancyGuard {
     error DKCEngine__TransferFailed();
     error DKCEngine__HealthFactorIsBroken(uint256 healthFactor);
     error DKCEngine__MintFailed();
+    error DKCEngine__HealthFactorOk();
+    error DKCEngine__HealthFactorNotImproved();
 
     //////////////////////////////////////////////////////
     //////////////       Constructors       //////////////
@@ -80,7 +82,8 @@ contract DKCEngine is ReentrancyGuard {
     uint256 private constant PRECISSION = 1e18;
     uint256 private constant LIQUIDATION_FACTOR = 50;
     uint256 private constant LIQUIDATION_PRECISION = 100;
-    uint256 private constant MINIMUM_HEALTH_THRESHHOLD = 1;
+    uint256 private constant MINIMUM_HEALTH_THRESHHOLD = 1e18;
+    uint256 private constant LIQUIDATION_BONUS_RATE = 10; // 10%
 
     mapping(address user => mapping(address token => uint256 amount)) private s_collateralDeposited;
     mapping(address token => address priceFeed) private s_priceFeeds;
@@ -94,7 +97,7 @@ contract DKCEngine is ReentrancyGuard {
     //////////////////////////////////////////////////////
 
     event CollateralDeposited(address indexed user, address indexed tokenAddress, uint256 indexed tokenAmount);
-    event CollateralRedeemed(address indexed user, address indexed tokenAddress, uint256 indexed tokenAmount);
+    event CollateralRedeemed(address indexed redeemedFrom, address indexed redeemedTo, address indexed tokenAddress, uint256 tokenAmount);
 
     //////////////////////////////////////////////////////
     //////////////        Modifiers        ///////////////
@@ -187,37 +190,57 @@ contract DKCEngine is ReentrancyGuard {
         nonReentrant
     {
         //Logic for redeeming collateral
-        s_collateralDeposited[msg.sender][collateralTokenAddress] -= collateralTokenAmount;
-        emit CollateralRedeemed(msg.sender, collateralTokenAddress, collateralTokenAmount);
-        bool success = IERC20(collateralTokenAddress).transfer(msg.sender, collateralTokenAmount);
-        if (!success) {
-            revert DKCEngine__TransferFailed();
-        }
+        _redeemCollateral(msg.sender, msg.sender, collateralTokenAddress, collateralTokenAmount);
         _revertIfHealthFactorIsBroken(msg.sender);
     }
 
     function burnDKC(uint256 dkcAmount) public amountGreaterThanZero(dkcAmount) {
         //Logic for burning DKC
-        s_DKCCoins[msg.sender] -= dkcAmount;
-        bool success = i_dsc.transferFrom(msg.sender, address(this), dkcAmount);
-        if (!success) {
-            revert DKCEngine__TransferFailed();
-        }
-        i_dsc.burn(dkcAmount);
+        _burnDKC(msg.sender, msg.sender, dkcAmount);
+        _revertIfHealthFactorIsBroken(msg.sender);
     }
 
     /**
      *  @param collateralTokenAddress this is the ERC20 collateral address
-     *  @param userAddress Undercollateralized user address
+     *  @param user Undercollateralized user address
      *  @param debtToClear DKC tokens you want toburn off toimprove user health and overall system health
      *  @notice if your collateral value drops and you are undercollateralized, we pay someone to liquidate you
      *  @notice Someone will be able to pay off the DKC you owe/own and take your collateral token(s)
      *  @notice you can choose to partially liquidate a user
      *  @notice After liquidation you'll get a liquidation bonus
+     *  @notice a bug would be present if the system was to be 100% collateralizzed meaning liquidaton discounts would not be available
      */
-    function liquidate(address collateralTokenAddress, address userAddress, uint256 debtToClear) external amountGreaterThanZero(debtToClear) nonReentrant{
+    function liquidate(address user, address collateralTokenAddress, uint256 debtToClear) external amountGreaterThanZero(debtToClear) nonReentrant{
         //Logic for liquidating undercollateralized users
+        uint256 startingHealth = _healthFactor(user);
+        if (startingHealth >= MINIMUM_HEALTH_THRESHHOLD){
+            revert DKCEngine__HealthFactorOk();
+        }
+        uint256 tokenAmountCovered = getTokenAmountFromUsd(collateralTokenAddress, debtToClear);
+        uint256 liquidatorBonus = tokenAmountCovered * LIQUIDATION_BONUS_RATE / LIQUIDATION_PRECISION;
+        uint256 totalRedeemableCollateral = tokenAmountCovered + liquidatorBonus;
+        // burn their DKC and take collateral
+        _redeemCollateral(user, msg.sender, collateralTokenAddress, totalRedeemableCollateral);
+        _burnDKC(msg.sender, user, totalRedeemableCollateral);
+        uint256 finalHealth = _healthFactor(user);
+        if (finalHealth <= startingHealth) {
+            revert DKCEngine__HealthFactorNotImproved();
+        }
+        _revertIfHealthFactorIsBroken(msg.sender);
         
+    }
+
+
+
+    /**
+     * @param collateralTokenAddress ERC20 token contract address
+     * @param usdTokenAmountInWei USD amount for token in wei
+     */
+    function getTokenAmountFromUsd(address collateralTokenAddress, uint256 usdTokenAmountInWei) public view returns(uint256) {
+        //Logic for getting token amount from USD
+        AggregatorV3Interface priceFeed = AggregatorV3Interface(s_priceFeeds[collateralTokenAddress]);
+        (, int256 price,,,) = priceFeed.latestRoundData();
+        return ((usdTokenAmountInWei * PRECISSION) / (uint256(price) * ADDITIONAL_FEED_PRECISSION));
     }
 
     //////////////////////////////////////////////////////
@@ -243,6 +266,33 @@ contract DKCEngine is ReentrancyGuard {
     //////////////////////////////////////////////////////
     ////////////// Private & Internal funcs //////////////
     //////////////////////////////////////////////////////
+
+    /**
+     * @dev call in a function that checks health.
+     */
+
+    function _burnDKC(address healthyUser, address unhealthyUser, uint256 dkcAmount) private amountGreaterThanZero(dkcAmount) {
+        //Logic for burning DKC
+        s_DKCCoins[unhealthyUser] -= dkcAmount;
+        bool success = i_dsc.transferFrom(healthyUser, address(this), dkcAmount);
+        if (!success) {
+            revert DKCEngine__TransferFailed();
+        }
+        i_dsc.burn(dkcAmount);
+    }
+
+    function _redeemCollateral(address from, address to, address collateralTokenAddress, uint256 collateralTokenAmount)
+        private
+        amountGreaterThanZero(collateralTokenAmount)
+        nonReentrant
+    {
+        s_collateralDeposited[from][collateralTokenAddress] -= collateralTokenAmount;
+        emit CollateralRedeemed(from, to, collateralTokenAddress, collateralTokenAmount);
+        bool success = IERC20(collateralTokenAddress).transfer(to, collateralTokenAmount);
+        if (!success) {
+            revert DKCEngine__TransferFailed();
+        }
+    }
 
     function _getUserAccountInfo(address user) private view returns (uint256 dkcMinted, uint256 usdCollateralValue) {
         dkcMinted = s_DKCCoins[user];
